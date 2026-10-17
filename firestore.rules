@@ -1,0 +1,51 @@
+rules_version = '2';
+
+// ============================================================================
+//  ПРАВИЛА БЕЗОПАСНОСТИ FIRESTORE
+//  Копируются в консоль Firebase: Firestore Database -> вкладка «Правила»
+//  (Rules) -> вставить этот текст -> «Опубликовать».
+//
+//  Смысл правил:
+//   • read  — читать может кто угодно (чтобы сайт-просмотр index.html работал).
+//   • write — писать может только вошедший пользователь (админ через
+//             Firebase Authentication). Анонимный посетитель писать не может.
+// ============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Вошёл ли пользователь (админ)? Проверяем наличие авторизации.
+    function isAdmin() {
+      return request.auth != null;
+    }
+
+    // Список людей: имя + счётчик отдежуренных дней
+    match /people/{personId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // Пары: состав и порядок очереди
+    match /pairs/{pairId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // Дежурства: неделя, день, человек, статус
+    match /duties/{dutyId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // Служебные документы (например, отметка «база уже создана»)
+    match /meta/{docId} {
+      allow read:  if true;
+      allow write: if isAdmin();
+    }
+
+    // Всё остальное закрыто полностью.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
