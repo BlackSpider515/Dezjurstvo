@@ -1,15 +1,60 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Дежурство</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Расписание дежурств учебной группы: кто дежурит сейчас, расписание по дням, статистика и история.">
+  <title>Дежурства группы</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='0.9em' font-size='90'%3E%F0%9F%93%8B%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<header><h1>Дежурство</h1></header>
-<main id="app">Загрузка…</main>
-<script>window.ADMIN = false;</script>
-<script type="module" src="app.js"></script>
+<body data-page="view">
+  <div class="app">
+
+    <header class="topbar">
+      <div class="topbar-main">
+        <h1 id="app-title">Дежурства группы</h1>
+        <p class="subtitle" id="app-subtitle">Просмотр расписания и статистики</p>
+      </div>
+      <div class="topbar-actions" id="auth-slot"></div>
+    </header>
+
+    <div id="notice" class="notice" hidden></div>
+
+    <!-- Сюда app.js печатает карточку «Кто дежурит» -->
+    <section class="card highlight" id="current-card">
+      <p class="muted">Загрузка расписания…</p>
+    </section>
+
+    <main id="content">
+      <nav class="tabs" id="tabs" hidden>
+        <button type="button" class="tab" data-action="tab" data-tab="week">Расписание</button>
+        <button type="button" class="tab" data-action="tab" data-tab="stats">Статистика</button>
+        <button type="button" class="tab" data-action="tab" data-tab="history">История</button>
+        <button type="button" class="tab" data-action="tab" data-admin-only data-tab="manage" hidden>Люди и пары</button>
+      </nav>
+
+      <section class="tabpanel" id="panel-week"></section>
+      <section class="tabpanel" id="panel-stats" hidden></section>
+      <section class="tabpanel" id="panel-history" hidden></section>
+      <section class="tabpanel" id="panel-manage" hidden></section>
+    </main>
+
+    <footer class="footer">
+      <span>Расписание обновляется в реальном времени.</span>
+      <span class="muted small">Только просмотр. Изменять данные может администратор.</span>
+    </footer>
+
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <noscript>
+    <p style="padding:16px;font-family:sans-serif">
+      Для работы сайта нужен включённый JavaScript.
+    </p>
+  </noscript>
+
+  <script type="module" src="app.js"></script>
 </body>
 </html>
