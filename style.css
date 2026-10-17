@@ -331,6 +331,10 @@ table.schedule .room {
 table.schedule tr.is-today { background: var(--accent-soft); }
 table.schedule tr.is-today .dow { color: var(--accent-dark); }
 
+/* Нерабочий день (праздник, выходной) — дежурств нет. */
+table.schedule tr.is-off { color: var(--muted); }
+table.schedule tr.is-off .dow { color: var(--muted); }
+
 /* ------------------------------ чипы ------------------------------------ */
 .chip {
   display: inline-flex;
@@ -347,6 +351,7 @@ table.schedule tr.is-today .dow { color: var(--accent-dark); }
 .chip-missed { background: var(--missed-soft); color: var(--missed); border-color: var(--missed); }
 .chip-none   { background: transparent;        color: var(--muted);  border-color: var(--line); }
 .chip-empty  { background: transparent;        color: var(--muted);  border-color: var(--line); font-style: italic; }
+.chip-off    { background: var(--bg);          color: var(--muted);  border-color: var(--line); border-style: dashed; }
 
 /* -------------------------- кнопки отметок (админ) ----------------------- */
 .marker { display: inline-flex; gap: 6px; }
@@ -409,6 +414,37 @@ table.schedule tr.is-today .dow { color: var(--accent-dark); }
   padding: 2px 4px;
 }
 .xbtn:hover { color: var(--missed); }
+
+/* Маленькая ссылка-кнопка под днём: «нет дежурства» / «вернуть дежурство». */
+.linkbtn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: .74rem;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.linkbtn:hover { color: var(--accent-dark); }
+
+/* -------------------- «Кто дежурит дальше» ------------------------------- */
+.next-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 6px; }
+
+.next-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: .92rem;
+}
+
+.next-list li.is-now { border-color: var(--accent); background: var(--accent-soft); }
+.next-list .next-week { color: var(--muted); white-space: nowrap; }
+.next-list .next-pair { font-weight: 600; text-align: right; }
 
 .rep-form { display: flex; gap: 6px; align-items: stretch; max-width: 330px; }
 .rep-form select { font-size: .86rem; padding: 6px 8px; min-width: 0; }
@@ -647,6 +683,9 @@ details.rules li { margin-bottom: 5px; }
   table.schedule td[data-label="Замена"] { flex-wrap: wrap; }
   .rep-form { flex-wrap: wrap; }
   .rep-form select { flex: 1 1 130px; }
+
+  .next-list li { flex-direction: column; gap: 2px; }
+  .next-list .next-pair { text-align: left; }
 
   .rank-table .hide-sm { display: none; }
 }

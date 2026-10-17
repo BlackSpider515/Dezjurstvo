@@ -44,6 +44,9 @@ const DAYS_FULL = ['понедельник', 'вторник', 'среда', 'ч
 /** Дежурные дни недели по порядку (например [1,2,3,4,5] = вторник–суббота). */
 const DUTY_DAY_LIST = [...DUTY_DAYS].sort((a, b) => a - b);
 
+/** Сколько недель вперёд показывать в карточке «Кто дежурит дальше». */
+const NEXT_WEEKS_COUNT = 4;
+
 /** Кабинет для дня недели: 2 -> "12", остальные -> DEFAULT_ROOM. */
 function roomForDay(day) {
   return ROOM_BY_DAY[day] || DEFAULT_ROOM;
@@ -326,8 +329,20 @@ function replacementsFor(week, day) {
     d.week === week && d.day === day && d.role === 'replacement');
 }
 
+/** В этот день дежурства нет (праздник или выходной)? */
+function isDayOff(week, day) {
+  return state.duties.some((d) =>
+    d.role === 'skip' && d.week === week && d.day === day);
+}
+
+/** Дежурные дни недели без нерабочих дней (праздников). */
+function dutyDaysOfWeek(week) {
+  return DUTY_DAY_LIST.filter((day) => !isDayOff(week, day));
+}
+
 /** Сколько человек из пары в этот день отмечены «не продежурил». */
 function missedCount(week, day) {
+  if (isDayOff(week, day)) return 0;   // дежурства нет — пропусков тоже нет
   return state.duties.filter((d) =>
     d.week === week && d.day === day && d.role === 'main' && d.status === 'missed').length;
 }
@@ -364,6 +379,8 @@ function computeStats() {
     map.set(p.id, { id: p.id, name: p.name, done: 0, missed: 0, known: true });
   }
   for (const d of state.duties) {
+    // Пометки «в этот день дежурства нет» людей не касаются.
+    if (!d.personId || d.role === 'skip') continue;
     let rec = map.get(d.personId);
     if (!rec) {
       rec = { id: d.personId, name: d.personName || '—', done: 0, missed: 0, known: false };
@@ -563,7 +580,7 @@ async function fillWeek(week, personId, status) {
   if (!person) return;
 
   const batch = writeBatch(db);
-  for (const day of DUTY_DAY_LIST) {
+  for (const day of dutyDaysOfWeek(week)) {
     const ref = doc(db, 'duties', dutyId(week, day, personId, 'main'));
     batch.set(ref, dutyPayload(week, day, person, 'main', status));
   }
@@ -598,11 +615,66 @@ async function clearWeek(week, personId) {
   }
 }
 
+/** Отметить день нерабочим (праздник, выходной) или вернуть дежурство обратно. */
+async function toggleDayOff(week, day) {
+  if (!requireAdmin() || state.busy) return;
+  const ref = doc(db, 'duties', `${week}__${day}__skip`);
+  const off = isDayOff(week, day);
+  const date = dayShort(addDays(parseISO(week), day));
+
+  // Ставим нерабочий день поверх уже поставленных отметок — предупреждаем.
+  if (!off) {
+    const marks = state.duties.filter((d) =>
+      d.week === week && d.day === day && d.role !== 'skip');
+    if (marks.length && !window.confirm(
+      `${DAYS_SHORT[day]}, ${date}: в этот день уже есть отметки (${marks.length}).\n\n` +
+      'Отметить день нерабочим и удалить их?')) return;
+  }
+
+  state.busy = true;
+  try {
+    if (off) {
+      await deleteDoc(ref);
+      toast(`${DAYS_SHORT[day]}, ${date}: дежурство снова есть`);
+    } else {
+      const batch = writeBatch(db);
+      for (const d of state.duties) {
+        if (d.week === week && d.day === day && d.role !== 'skip') {
+          batch.delete(doc(db, 'duties', d.id));
+        }
+      }
+      batch.set(ref, {
+        week,
+        day,
+        role: 'skip',
+        status: 'skip',
+        personId: null,
+        personName: '',
+        updatedAt: serverTimestamp(),
+        updatedBy: state.user ? state.user.email : null
+      });
+      await batch.commit();
+      toast(`${DAYS_SHORT[day]}, ${date}: дежурства нет`);
+    }
+  } catch (err) {
+    showError(err);
+  } finally {
+    state.busy = false;
+  }
+}
+
 /** Назначить замену на конкретный день. */
 async function assignReplacement(week, day, personId) {
   if (!requireAdmin()) return;
   const person = state.people.find((p) => p.id === personId);
   if (!person) { toast('Выберите человека из списка', 'err'); return; }
+
+  // Себя заменить нельзя: человек своей же пары в этот день и так дежурит.
+  const pair = pairForWeek(week);
+  if (pairMembers(pair).some((m) => m.id === personId)) {
+    toast(`${person.name} в этот день уже дежурит — заменить себя нельзя`, 'err');
+    return;
+  }
 
   try {
     await setDoc(doc(db, 'duties', dutyId(week, day, personId, 'replacement')),
@@ -749,6 +821,7 @@ function renderAll() {
 
   renderWeekSwitcher();
   renderCurrentCard();
+  renderNextCard();
   renderSchedule();
   renderStats();
   renderHistory();
@@ -892,27 +965,69 @@ function renderCurrentCard() {
   const members = pairMembers(pair);
   const stats = new Map(computeStats().map((s) => [s.id, s]));
   const weekDuties = state.duties.filter((d) => d.week === week);
+  const dutyDays = dutyDaysOfWeek(week);
 
   const membersHtml = members.map((m) => {
     const done = weekDuties.filter((d) =>
       d.personId === m.id && d.role === 'main' && d.status === 'done').length;
     const missed = weekDuties.filter((d) =>
       d.personId === m.id && d.role === 'main' && d.status === 'missed').length;
+    const repDone = weekDuties.filter((d) =>
+      d.personId === m.id && d.role === 'replacement' && d.status === 'done').length;
     const total = stats.get(m.id);
     return `
       <div class="member">
         <span class="mname">${esc(m.name || 'Вакансия')}</span>
-        <span class="mstats">на этой неделе: <b>${done}</b> из ${DUTY_DAY_LIST.length}${
-          missed ? ` · пропущено <b class="missed">${missed}</b>` : ''}</span>
+        <span class="mstats">на этой неделе: <b>${done}</b> из ${dutyDays.length}${
+          missed ? ` · пропущено <b class="missed">${missed}</b>` : ''}${
+          repDone ? ` · подменяет: <b>${repDone}</b> дн.` : ''}</span>
         <span class="mtotal">всего отдежурено: <b>${total ? total.done : 0}</b> ${plural(total ? total.done : 0, ['день', 'дня', 'дней'])}</span>
       </div>`;
   }).join('');
+
+  const offNote = dutyDays.length < DUTY_DAY_LIST.length
+    ? `<p class="muted small" style="margin:10px 0 0">Дежурных дней на этой неделе: ${
+        dutyDays.length} из ${DUTY_DAY_LIST.length} — в остальные дни дежурств нет.</p>`
+    : '';
 
   box.innerHTML = `
     <div class="card-label">${isNow ? 'Дежурят на этой неделе' : 'Дежурят на выбранной неделе'}</div>
     <div class="pair-title">${esc(pairTitle(pair))}</div>
     <div class="week-range">${esc(weekLabel(week))}${isNow ? ' · идёт сейчас' : ''}</div>
-    <div class="members">${membersHtml}</div>`;
+    <div class="members">${membersHtml}</div>
+    ${offNote}`;
+}
+
+/** «Кто дежурит дальше»: несколько ближайших дежурных недель (каникулы пропускаем). */
+function renderNextCard() {
+  const box = document.getElementById('next-card');
+  if (!box) return;
+
+  const current = nextDutyWeek(weekKeyOf(new Date()));
+  const weeks = [];
+  let cursor = current;
+  for (let i = 0; i < NEXT_WEEKS_COUNT; i += 1) {
+    weeks.push(cursor);
+    const next = shiftWeek(cursor, 1);
+    if (next === cursor) break;
+    cursor = next;
+  }
+
+  const rows = weeks.map((week) => {
+    const pair = pairForWeek(week);
+    const isNow = week === current;
+    return `<li class="${isNow ? 'is-now' : ''}">
+      <span class="next-week">${esc(weekLabel(week).replace(/\s+\d{4}$/, ''))}${
+        isNow ? ' · сейчас' : ''}</span>
+      <span class="next-pair">${
+        pair ? esc(pairTitle(pair)) : '<span class="muted">пары не заданы</span>'}</span>
+    </li>`;
+  }).join('');
+
+  box.innerHTML = `
+    <div class="card-label">Кто дежурит дальше</div>
+    <ul class="next-list">${rows}</ul>`;
+  box.hidden = false;
 }
 
 function renderSchedule() {
@@ -948,7 +1063,8 @@ function renderSchedule() {
   // Блок с подсказкой «кого ставить на замену» + быстрые действия (только админ).
   let suggestHtml = '';
   if (isAdmin) {
-    const top = ranking().filter((p) => p.known).slice(0, 5);
+    const inPairIds = new Set(members.map((m) => m.id));
+    const top = ranking().filter((p) => p.known && !inPairIds.has(p.id)).slice(0, 5);
     const quick = members.filter((m) => m.id).map((m) => `
       <button type="button" class="btn ghost small" data-action="fill-week"
         data-week="${week}" data-person="${m.id}" data-status="done">
@@ -985,21 +1101,32 @@ function renderSchedule() {
     const date = addDays(mon, day);
     const iso = toISO(date);
     const isToday = iso === today;
+    const off = isDayOff(week, day);
 
     let cells = '';
-    for (const m of members) {
-      const duty = m.id ? mainDuty(week, day, m.id) : null;
-      const status = duty ? duty.status : null;
 
-      if (!isAdmin) {
-        let chip = '<span class="chip chip-none">— нет отметки</span>';
-        if (status === 'done') chip = '<span class="chip chip-done">✓ продежурил</span>';
-        else if (status === 'missed') chip = '<span class="chip chip-missed">✗ не продежурил</span>';
-        cells += `<td data-label="${esc(m.name || 'Вакансия')}">${m.id ? chip : '<span class="chip chip-empty">вакансия</span>'}</td>`;
-      } else if (!m.id) {
-        cells += `<td data-label="Вакансия"><span class="chip chip-empty">вакансия</span></td>`;
-      } else {
-        cells += `<td data-label="${esc(m.name)}">
+    if (off) {
+      // День нерабочий: дежурств нет ни у кого.
+      for (const m of members) {
+        cells += `<td data-label="${esc(m.name || 'Вакансия')}"><span class="muted small">—</span></td>`;
+      }
+      if (isAdmin || showRepColumn) {
+        cells += '<td data-label="Замена"><span class="muted small">—</span></td>';
+      }
+    } else {
+      for (const m of members) {
+        const duty = m.id ? mainDuty(week, day, m.id) : null;
+        const status = duty ? duty.status : null;
+
+        if (!isAdmin) {
+          let chip = '<span class="chip chip-none">— нет отметки</span>';
+          if (status === 'done') chip = '<span class="chip chip-done">✓ продежурил</span>';
+          else if (status === 'missed') chip = '<span class="chip chip-missed">✗ не продежурил</span>';
+          cells += `<td data-label="${esc(m.name || 'Вакансия')}">${m.id ? chip : '<span class="chip chip-empty">вакансия</span>'}</td>`;
+        } else if (!m.id) {
+          cells += `<td data-label="Вакансия"><span class="chip chip-empty">вакансия</span></td>`;
+        } else {
+          cells += `<td data-label="${esc(m.name)}">
           <div class="marker">
             <button type="button" class="mbtn mbtn-done ${status === 'done' ? 'active' : ''}"
               data-action="mark" data-week="${week}" data-day="${day}" data-person="${m.id}"
@@ -1009,19 +1136,34 @@ function renderSchedule() {
               data-status="missed" title="Не продежурил">✗</button>
           </div>
         </td>`;
+        }
+      }
+
+      if (isAdmin) {
+        cells += `<td data-label="Замена">${renderReplacementCell(week, day, pair)}</td>`;
+      } else if (showRepColumn) {
+        cells += `<td data-label="Замена">${replacementInfo(week, day)}</td>`;
       }
     }
 
-    if (isAdmin) {
-      cells += `<td data-label="Замена">${renderReplacementCell(week, day, pair)}</td>`;
-    } else if (showRepColumn) {
-      cells += `<td data-label="Замена">${replacementInfo(week, day)}</td>`;
-    }
+    // Подпись дня: комната дежурства или пометка «дежурства нет».
+    const caption = off
+      ? '<span class="chip chip-off">дежурства нет</span>'
+      : `<span class="room">каб. ${esc(roomForDay(day))}</span>`;
 
-    return `<tr class="${isToday ? 'is-today' : ''}">
+    // Кнопка для админа: отметить день нерабочим и вернуть обратно.
+    const offBtn = isAdmin
+      ? `<button type="button" class="linkbtn" data-action="day-off"
+           data-week="${week}" data-day="${day}"
+           title="${off ? 'Снова дежурим в этот день' : 'Праздник или выходной — в этот день дежурства нет'}">${
+           off ? 'вернуть дежурство' : 'нет дежурства'}</button>`
+      : '';
+
+    return `<tr class="${[isToday ? 'is-today' : '', off ? 'is-off' : ''].filter(Boolean).join(' ')}">
       <th class="col-day">
         <span class="dow">${DAYS_SHORT[day]}</span><span class="dnum">${dayShort(date)}</span>
-        <span class="room">каб. ${esc(roomForDay(day))}</span>
+        ${caption}
+        ${offBtn}
       </th>
       ${cells}
     </tr>`;
@@ -1043,6 +1185,8 @@ function renderSchedule() {
           <li>Каникулы — ${OFF_MONTHS.map((m) => MONTHS_GEN[m]).join(', ')}: дежурств нет, эти недели в расписании не показываются.</li>
           <li>Учебный год начинается 1 сентября: с первой недели сентября очередь снова идёт с 1-й пары.</li>
           <li>По каждому человеку и дню админ отмечает: продежурил или нет.</li>
+          <li>Если в какой-то день занятия отменяют (праздник, выходной), админ отмечает день как «дежурства нет» — в этот день никто не дежурит и отметок нет.</li>
+          <li>Себя заменить нельзя: человек своей же пары в этот день и так дежурит.</li>
           <li>Если человек отмечен как «не продежурил», его недостающие дни не пропадают — они добираются позже: на такие дни ставят тех, у кого меньше всего отдежуренных дней. Замен нужно ровно столько, сколько человек пропустило этот день.</li>
           <li>Назначенная замена сначала «ждёт отметки»: после дежурства админ ставит ей ✓ или ✗. В статистику день идёт только после ✓.</li>
           <li>В рейтинге люди отсортированы от меньшего количества отдежуренных дней к большему.</li>
@@ -1094,8 +1238,10 @@ function renderReplacementCell(week, day, pair) {
     const suggestions = suggestedReplacements(pair, day, 5);
     const suggestedIds = new Set(suggestions.map((s) => s.id));
     const takenIds = new Set(reps.map((r) => r.personId));
+    // Пару этой недели в списке не показываем: себя заменить нельзя.
+    const pairIds = new Set(pairMembers(pair).map((m) => m.id));
     const rest = ranking().filter((p) =>
-      p.known && !suggestedIds.has(p.id) && !takenIds.has(p.id));
+      p.known && !suggestedIds.has(p.id) && !takenIds.has(p.id) && !pairIds.has(p.id));
 
     let options = '<option value="">— выбрать человека —</option>';
     if (suggestions.length) {
@@ -1397,6 +1543,11 @@ document.addEventListener('click', async (event) => {
     case 'week-today': {
       state.week = nextDutyWeek(weekKeyOf(new Date()));
       renderAll();
+      break;
+    }
+
+    case 'day-off': {
+      await toggleDayOff(el.dataset.week, Number(el.dataset.day));
       break;
     }
 
