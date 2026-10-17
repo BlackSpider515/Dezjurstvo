@@ -1718,7 +1718,563 @@ function showAdminScreen() {
   if (content) content.hidden = false;
 }
 
+/* ==========================================================================
+   Цвет и фон: выбор темы (зелёная, розовая, оранжевая, снежная).
+   Тема меняет акцент всего сайта и вид фона. Выбор хранится в браузере
+   (localStorage) и применяется сразу, без перезагрузки страницы.
+   ========================================================================== */
+
+const THEME_KEY = 'duty-theme';
+
+const THEMES = {
+  green:  { label: 'Зелёный',   hint: 'точки',     swatch: '#3fae74', bg: 'dots' },
+  pink:   { label: 'Розовый',   hint: 'ромбы',     swatch: '#e0568f', bg: 'ornament' },
+  orange: { label: 'Оранжевый', hint: 'соты',      swatch: '#e58f34', bg: 'comb' },
+  snow:   { label: 'Снежный',   hint: 'снежинки',  swatch: '#54a2e0', bg: 'snow' }
+};
+
+const THEME_ORDER = ['green', 'pink', 'orange', 'snow'];
+
+const themeListeners = [];
+let activeTheme = 'green';
+
+/** Подписаться на смену темы (фон и счётчик перерисовываются сами). */
+function onThemeChange(fn) {
+  themeListeners.push(fn);
+}
+
+function savedTheme() {
+  try {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved && THEMES[saved]) return saved;
+  } catch (err) {
+    // приватный режим браузера — просто используем тему по умолчанию
+  }
+  return 'green';
+}
+
+/** Режим фона для текущей темы: dots | ornament | comb | snow. */
+function bgMode() {
+  return (THEMES[activeTheme] || THEMES.green).bg;
+}
+
+function applyTheme(name) {
+  const next = THEMES[name] ? name : 'green';
+  activeTheme = next;
+  document.documentElement.dataset.theme = next;
+  try {
+    window.localStorage.setItem(THEME_KEY, next);
+  } catch (err) {
+    // запомнить не получилось — не страшно, тема просто не сохранится
+  }
+  themeListeners.forEach((fn) => {
+    try { fn(next); } catch (err) { console.error(err); }
+  });
+}
+
+/** Кнопка «Цвет» в шапке и список тем. */
+function renderThemePicker() {
+  const mount = document.getElementById('theme-mount');
+  if (!mount || mount.querySelector('.theme-picker')) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'theme-picker';
+  wrap.innerHTML =
+    '<button type="button" class="theme-btn" id="theme-btn" aria-haspopup="true" aria-expanded="false">' +
+      '<span class="theme-btn-dot"></span><span>Цвет</span>' +
+    '</button>' +
+    '<div class="theme-menu" id="theme-menu" role="menu" hidden>' +
+      '<p class="theme-menu-title">Цвет и фон</p>' +
+      THEME_ORDER.map((key) => (
+        '<button type="button" class="theme-item" role="menuitemradio" data-theme="' + key + '" aria-checked="false">' +
+          '<span class="theme-swatch" style="background:' + THEMES[key].swatch + '"></span>' +
+          '<span class="theme-name">' + THEMES[key].label + '</span>' +
+          '<span class="theme-hint">' + THEMES[key].hint + '</span>' +
+        '</button>'
+      )).join('') +
+    '</div>';
+  mount.appendChild(wrap);
+
+  const btn = wrap.querySelector('#theme-btn');
+  const menu = wrap.querySelector('#theme-menu');
+
+  function closeMenu() {
+    menu.hidden = true;
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+    btn.setAttribute('aria-expanded', menu.hidden ? 'false' : 'true');
+  });
+
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-theme]');
+    if (!item) return;
+    applyTheme(item.dataset.theme);
+    closeMenu();
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !wrap.contains(e.target)) closeMenu();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) { closeMenu(); btn.focus(); }
+  });
+
+  const mark = () => {
+    wrap.querySelectorAll('.theme-item').forEach((item) => {
+      const on = item.dataset.theme === activeTheme;
+      item.classList.toggle('is-active', on);
+      item.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+    wrap.querySelector('.theme-btn-dot').style.background = THEMES[activeTheme].swatch;
+    btn.title = 'Цвет и фон: ' + THEMES[activeTheme].label;
+  };
+
+  mark();
+  onThemeChange(mark);
+}
+
+/* ==========================================================================
+   Интерактивный фон. Узор зависит от темы:
+   • зелёная — точки, • розовая — ромбы, • оранжевая — соты, • снежная — снежинки.
+   Плюс мягкое свечение под курсором, рост узора рядом с ним и волна от клика.
+   • На компьютере свечение ходит за мышкой.
+   • На телефоне (курсора нет) оно медленно плавает само.
+   • Если в системе включено «уменьшить движение» — фон не включается.
+   ========================================================================== */
+
+const BG_STEP = 46;       // шаг узора, px
+const BG_NEAR = 155;      // на каком расстоянии курсор подсвечивает узор
+const BG_GLOW_R = 320;    // радиус свечения, px
+const BG_FLAKE_AREA = 16000; // одна снежинка примерно на столько пикселей площади
+
+/** "#2f8f5b" -> { r, g, b } */
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || '').trim());
+  return m
+    ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) }
+    : { r: 47, g: 143, b: 91 };
+}
+
+/** Контур фигуры узора в точке (x, y) с «радиусом» s. */
+function bgShape(ctx, mode, x, y, s) {
+  ctx.beginPath();
+  if (mode === 'comb') {
+    // шестиугольник — «соты»
+    for (let i = 0; i < 6; i += 1) {
+      const a = Math.PI / 6 + (i * Math.PI) / 3;
+      const px = x + Math.cos(a) * s;
+      const py = y + Math.sin(a) * s;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  } else if (mode === 'ornament') {
+    // ромб — «узор»
+    ctx.moveTo(x, y - s);
+    ctx.lineTo(x + s, y);
+    ctx.lineTo(x, y + s);
+    ctx.lineTo(x - s, y);
+    ctx.closePath();
+  } else {
+    ctx.arc(x, y, s, 0, Math.PI * 2);
+  }
+}
+
+/** Снежинка: три луча с веточками. */
+function bgFlake(ctx, x, y, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 3; i += 1) {
+    const a = (i * Math.PI) / 3;
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+
+    ctx.moveTo(x - dx * r, y - dy * r);
+    ctx.lineTo(x + dx * r, y + dy * r);
+
+    // по две веточки на каждом луче
+    const bx = x + dx * r * 0.6;
+    const by = y + dy * r * 0.6;
+    const px = -dy * r * 0.32 - dx * r * 0.14;
+    const py = dx * r * 0.32 - dy * r * 0.14;
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx + px, by + py);
+    ctx.moveTo(bx, by);
+    ctx.lineTo(bx - px, by - py);
+  }
+  ctx.stroke();
+}
+
+function initBackground() {
+  if (!document.body) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (document.getElementById('bg-canvas')) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.id = 'bg-canvas';
+  canvas.setAttribute('aria-hidden', 'true');
+  document.body.prepend(canvas);
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) { canvas.remove(); return; }
+
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  let theme = null;
+  let mode = 'dots';
+  let W = 0, H = 0, dpr = 1;
+  let pattern = null;
+  let points = [];
+  let flakes = [];
+  let rafId = 0;
+  let lastDraw = 0;
+  let drift = 0;
+  const ripples = [];
+  const pointer = { x: -9999, y: -9999, tx: -9999, ty: -9999, real: false };
+
+  function readTheme() {
+    const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent');
+    return { rgb: hexToRgb(accent), dark: mq.matches };
+  }
+
+  function rgba(a) {
+    return `rgba(${theme.rgb.r},${theme.rgb.g},${theme.rgb.b},${a})`;
+  }
+
+  /** Размер холста, узор фона и снежинки. Узор рисуем один раз в запасной холст. */
+  function build() {
+    theme = readTheme();
+    mode = bgMode();
+
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.max(1, Math.floor(W * dpr));
+    canvas.height = Math.max(1, Math.floor(H * dpr));
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    points = [];
+    for (let y = BG_STEP / 2; y < H; y += BG_STEP) {
+      for (let x = BG_STEP / 2; x < W; x += BG_STEP) points.push([x, y]);
+    }
+
+    pattern = document.createElement('canvas');
+    pattern.width = canvas.width;
+    pattern.height = canvas.height;
+
+    if (mode !== 'snow') {
+      const pctx = pattern.getContext('2d');
+      pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const base = rgba(theme.dark ? 0.22 : 0.17);
+      pctx.fillStyle = base;
+      pctx.strokeStyle = base;
+      pctx.lineWidth = 1.2;
+
+      for (const [x, y] of points) {
+        bgShape(pctx, mode, x, y, mode === 'dots' ? 1.5 : 5.5);
+        if (mode === 'dots') {
+          pctx.fill();
+        } else {
+          pctx.stroke();
+          if (mode === 'ornament') {           // в центре ромба — точка
+            pctx.beginPath();
+            pctx.arc(x, y, 1.1, 0, Math.PI * 2);
+            pctx.fill();
+          }
+        }
+      }
+    }
+
+    flakes = [];
+    if (mode === 'snow') {
+      const count = Math.max(24, Math.round((W * H) / BG_FLAKE_AREA));
+      for (let i = 0; i < count; i += 1) {
+        flakes.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          r: 2.5 + Math.random() * 5,
+          vy: 0.3 + Math.random() * 0.9,
+          vx: (Math.random() - 0.5) * 0.3,
+          ph: Math.random() * Math.PI * 2
+        });
+      }
+    }
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+    if (pattern) ctx.drawImage(pattern, 0, 0, W, H);
+
+    const hasPointer = pointer.x > -9000;
+
+    if (hasPointer) {
+      // свечение вокруг курсора (только нужный квадрат, а не весь экран)
+      const g = ctx.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, BG_GLOW_R);
+      const a = theme.dark ? 0.10 : 0.13;
+      g.addColorStop(0, rgba(a));
+      g.addColorStop(0.6, rgba(a * 0.32));
+      g.addColorStop(1, rgba(0));
+      ctx.fillStyle = g;
+      ctx.fillRect(pointer.x - BG_GLOW_R, pointer.y - BG_GLOW_R, BG_GLOW_R * 2, BG_GLOW_R * 2);
+    }
+
+    if (mode === 'snow') {
+      // снежинки падают сами, рядом с курсором светятся сильнее
+      ctx.strokeStyle = rgba(1);
+      ctx.lineWidth = 1.2;
+      for (const f of flakes) {
+        let k = 0;
+        if (hasPointer) {
+          const d = Math.hypot(f.x - pointer.x, f.y - pointer.y);
+          if (d < BG_NEAR * 1.6) k = 1 - d / (BG_NEAR * 1.6);
+        }
+        ctx.globalAlpha = (theme.dark ? 0.5 : 0.62) * (0.45 + 0.55 * k);
+        bgFlake(ctx, f.x, f.y, f.r);
+      }
+      ctx.globalAlpha = 1;
+    } else if (hasPointer) {
+      // узор рядом с курсором — крупнее и ярче
+      ctx.strokeStyle = rgba(1);
+      ctx.fillStyle = rgba(1);
+      for (const [x, y] of points) {
+        const d = Math.hypot(x - pointer.x, y - pointer.y);
+        if (d >= BG_NEAR) continue;
+        const k = 1 - d / BG_NEAR;
+
+        if (mode === 'dots') {
+          ctx.globalAlpha = k * k * (theme.dark ? 0.55 : 0.45);
+          bgShape(ctx, 'dots', x, y, 1.5 + 2 * k);
+          ctx.fill();
+        } else {
+          ctx.globalAlpha = k * (theme.dark ? 0.6 : 0.5);
+          ctx.lineWidth = 1.2 + 0.9 * k;
+          bgShape(ctx, mode, x, y, 5.5 * (1 + 0.5 * k));
+          ctx.stroke();
+          if (mode === 'ornament') {
+            ctx.beginPath();
+            ctx.arc(x, y, 1.1 + 1.1 * k, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // волны от кликов
+    for (let i = ripples.length - 1; i >= 0; i -= 1) {
+      const rp = ripples[i];
+      rp.r += 4.2;
+      rp.a -= 0.013;
+      if (rp.a <= 0) { ripples.splice(i, 1); continue; }
+      ctx.beginPath();
+      ctx.arc(rp.x, rp.y, rp.r, 0, Math.PI * 2);
+      ctx.strokeStyle = rgba(rp.a);
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+  }
+
+  function tick(now) {
+    rafId = 0;
+    if (now && now - lastDraw < 30) { rafId = requestAnimationFrame(tick); return; }
+    const dt = lastDraw ? Math.min(3, (now - lastDraw) / 33) : 1;
+    lastDraw = now || 0;
+
+    if (pointer.real) {
+      pointer.x += (pointer.tx - pointer.x) * 0.15;
+      pointer.y += (pointer.ty - pointer.y) * 0.15;
+    } else {
+      drift += 0.005;
+      pointer.x = W * (0.5 + 0.33 * Math.sin(drift));
+      pointer.y = H * (0.45 + 0.27 * Math.cos(drift * 0.83));
+    }
+
+    if (mode === 'snow') {
+      for (const f of flakes) {
+        f.ph += 0.012 * dt;
+        f.y += f.vy * dt;
+        f.x += (f.vx + Math.sin(f.ph) * 0.35) * dt;
+        if (f.y > H + 8) { f.y = -8; f.x = Math.random() * W; }
+        if (f.x < -8) f.x = W + 8;
+        else if (f.x > W + 8) f.x = -8;
+      }
+    }
+
+    draw();
+
+    const settled = pointer.real &&
+      Math.abs(pointer.tx - pointer.x) < 0.7 && Math.abs(pointer.ty - pointer.y) < 0.7;
+    if (!settled || ripples.length || mode === 'snow') rafId = requestAnimationFrame(tick);
+  }
+
+  function wake() {
+    if (!rafId) rafId = requestAnimationFrame(tick);
+  }
+
+  window.addEventListener('pointermove', (e) => {
+    pointer.tx = e.clientX;
+    pointer.ty = e.clientY;
+    if (!pointer.real) { pointer.x = pointer.tx; pointer.y = pointer.ty; pointer.real = true; }
+    wake();
+  }, { passive: true });
+
+  window.addEventListener('pointerdown', (e) => {
+    pointer.real = true;
+    pointer.tx = e.clientX;
+    pointer.ty = e.clientY;
+    if (pointer.x < -9000) { pointer.x = e.clientX; pointer.y = e.clientY; }
+    ripples.push({ x: e.clientX, y: e.clientY, r: 4, a: theme.dark ? 0.5 : 0.4 });
+    wake();
+  }, { passive: true });
+
+  document.addEventListener('mouseleave', () => { pointer.real = false; wake(); });
+  window.addEventListener('resize', () => { build(); wake(); });
+  if (mq.addEventListener) {
+    mq.addEventListener('change', () => { build(); wake(); }); // переключили день/ночь
+  }
+  onThemeChange(() => { build(); lastDraw = 0; wake(); });      // выбрали другую тему
+
+  build();
+  wake();
+}
+
+/* ---------------------- счётчик «до лета» в шапке -------------------------- */
+
+const SUMMER_JOKES = [
+  'Потерпи 😌',
+  'Совсем скоро',
+  'Уже недолго',
+  'Тряпка тоже ждёт лета',
+  'Держись, дежурный'
+];
+
+function daysBetween(later, earlier) {
+  return Math.max(0, Math.round((later - earlier) / 86400000));
+}
+
+/** Цвет акцента темы как {r, g, b} — чтобы плашка была в цвет сайта. */
+function accentRgb() {
+  return hexToRgb(getComputedStyle(document.documentElement).getPropertyValue('--accent'));
+}
+
+/**
+ * Сколько осталось до лета на конкретную дату. Летом (каникулярные месяцы)
+ * считаем до 1 сентября. Каникулы берём из OFF_MONTHS в firebase-config.js.
+ * progress — какая часть учебного года (с 1 сентября) уже прошла: 0…1.
+ */
+function summerCountdownAt(when) {
+  const now = new Date(when.getFullYear(), when.getMonth(), when.getDate());
+
+  const year = now.getFullYear();
+  const firstOff = OFF_MONTHS[0];
+  const lastOff = OFF_MONTHS[OFF_MONTHS.length - 1];
+  const summerStart = new Date(year, firstOff, 1);
+  const summerEnd = new Date(year, lastOff + 1, 1);
+
+  if (now >= summerStart && now < summerEnd) {
+    return { summer: true, days: daysBetween(summerEnd, now), target: summerEnd, progress: 1 };
+  }
+
+  const target = now < summerStart ? summerStart : new Date(year + 1, firstOff, 1);
+  const yearStart = new Date(target.getFullYear() - 1, 8, 1); // 1 сентября: начало учебного года
+  const total = daysBetween(target, yearStart);
+  const passed = daysBetween(now, yearStart);
+
+  return {
+    summer: false,
+    days: daysBetween(target, now),
+    target,
+    progress: total > 0 ? Math.min(1, passed / total) : 0
+  };
+}
+
+function summerCountdown() {
+  return summerCountdownAt(new Date());
+}
+
+/** «до лета 257 дней» — текстом, без иконки. */
+function summerText(when) {
+  const c = when ? summerCountdownAt(when) : summerCountdown();
+  const word = plural(c.days, ['день', 'дня', 'дней']);
+  return c.summer ? `до 1 сентября ${c.days} ${word}` : `до лета ${c.days} ${word}`;
+}
+
+/** «1 июля 2027 г.» — для подсказки при наведении. */
+function summerDateText(date) {
+  try {
+    return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch (err) {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Плашка «до лета» рядом с заголовком в шапке.
+ * • подкрашена в цвет темы и показывает, сколько учебного года уже позади;
+ * • ближе 100 дней — заметнее, ближе 30 — «горит» и солнышко покачивается;
+ * • клик — шутка всплывающей плашкой снизу (сам счётчик при этом не дёргается).
+ */
+function renderSummerBadge(when) {
+  const mount = document.getElementById('summer-mount');
+  if (!mount) return;
+
+  let el = document.getElementById('summer-badge');
+  if (!el) {
+    el = document.createElement('button');
+    el.type = 'button';
+    el.id = 'summer-badge';
+    el.className = 'summer-badge';
+    el.innerHTML =
+      '<span class="summer-ico"></span>' +
+      '<span class="summer-txt"></span>' +
+      '<span class="summer-bar"><i></i></span>';
+
+    el.addEventListener('click', () => {
+      toast(SUMMER_JOKES[Math.floor(Math.random() * SUMMER_JOKES.length)]);
+      el.classList.remove('bounce');
+      void el.offsetWidth; // чтобы анимация запускалась и при быстрых кликах подряд
+      el.classList.add('bounce');
+      setTimeout(() => el.classList.remove('bounce'), 520);
+    });
+
+    mount.appendChild(el);
+
+    // сменили день/ночь или цветовую тему — перекрасить плашку в новый акцент
+    const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (mq && mq.addEventListener) mq.addEventListener('change', () => renderSummerBadge());
+    onThemeChange(() => renderSummerBadge());
+  }
+
+  const c = when ? summerCountdownAt(when) : summerCountdown();
+  const rgb = accentRgb();
+  el.style.setProperty('--sb-tint', `rgba(${rgb.r},${rgb.g},${rgb.b},.13)`);
+  el.style.setProperty('--sb-line', `rgba(${rgb.r},${rgb.g},${rgb.b},.34)`);
+
+  el.querySelector('.summer-ico').textContent = c.summer ? '🏖' : '☀️';
+  el.querySelector('.summer-txt').innerHTML =
+    (c.summer ? 'до 1 сентября ' : 'до лета ') +
+    '<b>' + c.days + '</b> ' +
+    plural(c.days, ['день', 'дня', 'дней']);
+  el.querySelector('.summer-bar i').style.width = Math.round(c.progress * 100) + '%';
+
+  el.title = (c.summer ? 'Каникулы до ' : 'Лето начнётся ') + summerDateText(c.target);
+  el.classList.toggle('near', !c.summer && c.days <= 100 && c.days > 30);
+  el.classList.toggle('soon', !c.summer && c.days <= 30);
+}
+
+/* Тема из памяти браузера применяется сразу, до первой отрисовки страницы. */
+applyTheme(savedTheme());
+
 async function boot() {
+  initBackground();
+  renderSummerBadge();
+  renderThemePicker();
+
   if (!IS_CONFIGURED) {
     // Конфиг ещё не заполнен — просто показываем подсказку, ничего не ломаем.
     const loading = document.getElementById('loading');
