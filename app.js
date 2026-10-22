@@ -2163,24 +2163,30 @@ function accentRgb() {
 }
 
 /**
- * Сколько осталось до лета на конкретную дату. Летом (каникулярные месяцы)
- * считаем до 1 сентября. Каникулы берём из OFF_MONTHS в firebase-config.js.
+ * С какого месяца считается «лето» для плашки в шапке: 0 — январь, …, 5 — июнь.
+ * Это только счётчик. Каникулы, когда нет дежурств, задаются отдельно —
+ * OFF_MONTHS в firebase-config.js (июль и август), этот месяц их не меняет.
+ */
+const SUMMER_START_MONTH = 5;
+
+/**
+ * Сколько осталось до лета (до 1 июня) на конкретную дату. С июня по август
+ * лето уже идёт — тогда считаем до 1 сентября.
  * progress — какая часть учебного года (с 1 сентября) уже прошла: 0…1.
  */
 function summerCountdownAt(when) {
   const now = new Date(when.getFullYear(), when.getMonth(), when.getDate());
 
   const year = now.getFullYear();
-  const firstOff = OFF_MONTHS[0];
   const lastOff = OFF_MONTHS[OFF_MONTHS.length - 1];
-  const summerStart = new Date(year, firstOff, 1);
-  const summerEnd = new Date(year, lastOff + 1, 1);
+  const summerStart = new Date(year, SUMMER_START_MONTH, 1);   // 1 июня
+  const summerEnd = new Date(year, lastOff + 1, 1);            // 1 сентября
 
   if (now >= summerStart && now < summerEnd) {
     return { summer: true, days: daysBetween(summerEnd, now), target: summerEnd, progress: 1 };
   }
 
-  const target = now < summerStart ? summerStart : new Date(year + 1, firstOff, 1);
+  const target = now < summerStart ? summerStart : new Date(year + 1, SUMMER_START_MONTH, 1);
   const yearStart = new Date(target.getFullYear() - 1, 8, 1); // 1 сентября: начало учебного года
   const total = daysBetween(target, yearStart);
   const passed = daysBetween(now, yearStart);
